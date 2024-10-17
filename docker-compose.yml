@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  minio:
+    container_name: minio_cryptobot
+    image: minio/minio:RELEASE.2022-11-08T05-27-07Z
+    command: server /data --console-address ":9001"
+    ports:
+      - "9003:9000"
+      - "9004:9001"
+    networks:
+      - cryptobot_network
+
+  zookeeper_cryptobot:
+    container_name: zookeeper_cryptobot
+    image: bitnami/zookeeper:latest
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2182:2181"
+    restart: unless-stopped
+    networks:
+      - cryptobot_network
+
+  kafka_cryptobot:
+    container_name: kafka_cryptobot
+    image: bitnami/kafka:latest
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka_cryptobot:9092
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper_cryptobot:2181
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper_cryptobot
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - cryptobot_network
+
+  kafdrop:
+    container_name: kafdrop_cryptobot
+    image: obsidiandynamics/kafdrop:3.30.0
+    environment:
+      - KAFKA_BROKERCONNECT=kafka_cryptobot:9092
+    ports:
+      - "9005:9000"
+    depends_on:
+      - kafka_cryptobot
+    restart: unless-stopped
+    networks:
+      - cryptobot_network
+
+  bot:
+    build: .
+    container_name: bot_cryptobot
+    environment:
+      TELEGRAM_TOKEN: "${TELEGRAM_TOKEN}"
+      KAFKA_BROKERCONNECT: kafka_cryptobot:9092
+    volumes:
+      - ./main.py:/app/main.py
+    command: python main.py
+    depends_on:
+      - kafka_cryptobot
+    restart: unless-stopped
+    networks:
+      - cryptobot_network
+
+  spark_consumer:
+    build: .
+    container_name: spark_consumer_cryptobot
+    environment:
+      TELEGRAM_TOKEN: "${TELEGRAM_TOKEN}"
+      KAFKA_BROKERCONNECT: kafka_cryptobot:9092
+      PYTHONPATH: /app
+    command:
+      - spark-submit
+      - --master
+      - local[*]
+      - --jars
+      - /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.2.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.2.jar,/opt/spark/jars/kafka-clients-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar,/opt/spark/jars/lz4-java-1.8.0.jar,/opt/spark/jars/snappy-java-1.1.10.5.jar
+      - /app/core/spark_consumer.py
+    depends_on:
+      - kafka_cryptobot
+    restart: unless-stopped
+    networks:
+      - cryptobot_network
+
+networks:
+  cryptobot_network:
